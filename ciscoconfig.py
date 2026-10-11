@@ -54,6 +54,13 @@ def main():
         elif choice == "4":
             config["trunk_ports"] = get_trunk_ports(config.get("trunk_ports", []), config.get("access_ports", []))
         elif choice == "5":
+            # Collect everything in one session, in a sensible order.
+            config = get_initial_config(config)
+            config["vlans"] = get_vlans(config.get("vlans", []))
+            config["access_ports"] = get_access_ports(config.get("access_ports", []))
+            config["trunk_ports"] = get_trunk_ports(
+                config.get("trunk_ports", []), config.get("access_ports", [])
+            )
             complete_cfg = generate_complete_config(config)
             handle_output(complete_cfg)
         else:
@@ -395,8 +402,9 @@ def validate_ipv4(addr):
 
 
 def sanitize_string(s, max_len=64):
-    """Remove characters that could be used for CLI injection."""
-    s = re.sub(r"[^a-zA-Z0-9 _-]", "", s)
+    """Remove characters that could be used for CLI injection.
+    Allows letters, digits, spaces, dots, dashes, and underscores."""
+    s = re.sub(r"[^a-zA-Z0-9 ._-]", "", s)
     s = s[:max_len].strip()
     return s
 
@@ -709,3 +717,7 @@ def handle_output(complete_cfg):
         except IOError as e:
             print(f"Error saving file: {e}")
     # choice 4: return to main menu (just fall through)
+
+
+if __name__ == "__main__":
+    main()
