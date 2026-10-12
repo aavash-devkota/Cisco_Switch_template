@@ -47,12 +47,16 @@ def main():
             break
         elif choice == "1":
             config = get_initial_config(config)
+            handle_output(generate_config("initial", config))
         elif choice == "2":
             config["vlans"] = get_vlans(config.get("vlans", []))
+            handle_output(generate_config("vlans", config))
         elif choice == "3":
             config["access_ports"] = get_access_ports(config.get("access_ports", []))
+            handle_output(generate_config("access", config))
         elif choice == "4":
             config["trunk_ports"] = get_trunk_ports(config.get("trunk_ports", []), config.get("access_ports", []))
+            handle_output(generate_config("trunk", config))
         elif choice == "5":
             # Collect everything in one session, in a sensible order.
             config = get_initial_config(config)
@@ -61,8 +65,7 @@ def main():
             config["trunk_ports"] = get_trunk_ports(
                 config.get("trunk_ports", []), config.get("access_ports", [])
             )
-            complete_cfg = generate_complete_config(config)
-            handle_output(complete_cfg)
+            handle_output(generate_config("complete", config))
         else:
             print("Invalid choice. Please enter 0-5.")
 
@@ -569,6 +572,62 @@ def generate_trunk_ports_section(trunk_ports):
     return "\n".join(lines)
 
 
+def verification_commands(section, config):
+    """Return verification commands relevant to the given section."""
+    if section == "complete":
+        cmds = ["show running-config", "show vlan brief"]
+        referenced = sorted({ap["interface"] for ap in config["access_ports"]}
+                            | {tp["interface"] for tp in config["trunk_ports"]})
+        if referenced:
+            cmds.append("show interfaces status | include " + "| ".join(referenced[:10]))
+        cmds += ["show interfaces trunk", "show interfaces switchport"]
+        return cmds
+    if section == "initial":
+        return ["show running-config", "show ip interface brief"]
+    if section == "vlans":
+        return ["show vlan brief", "show running-config"]
+    if section == "access":
+        return ["show interfaces status", "show interfaces switchport", "show running-config"]
+    if section == "trunk":
+        return ["show interfaces trunk", "show interfaces switchport", "show running-config"]
+    return ["show running-config"]
+
+
+def generate_config(section, config):
+    """Build the copyable output block for a single module section.
+
+    section is one of: 'initial', 'vlans', 'access', 'trunk', 'complete'.
+    """
+    if section == "complete":
+        return generate_complete_config(config)
+
+    titles = {
+        "initial": "Initial Device Configuration",
+        "vlans": "VLAN Configuration",
+        "access": "Access-Port Configuration",
+        "trunk": "Trunk-Port Configuration",
+    }
+    builders = {
+        "initial": lambda: generate_initial_config_section(config),
+        "vlans": lambda: generate_vlans_section(config["vlans"]),
+        "access": lambda: generate_access_ports_section(config["access_ports"]),
+        "trunk": lambda: generate_trunk_ports_section(config["trunk_ports"]),
+    }
+
+    lines = [
+        "=" * 60,
+        f"Cisco Switch Configuration - {titles[section]}",
+        "=" * 60,
+        "",
+        builders[section](),
+        "",
+        "! --- Verification Commands ---",
+    ]
+    lines.extend(verification_commands(section, config))
+    lines += ["", "=" * 60, "END OF CONFIGURATION", "=" * 60]
+    return "\n".join(lines)
+
+
 def generate_complete_config(config):
     """Generate the complete combined configuration."""
     lines = []
@@ -698,13 +757,14 @@ def handle_output(complete_cfg):
         print("=" * 60)
         print(complete_cfg)
         print("=" * 60 + "\n")
-    elif choice in ("2", "3"):
-        ext = ".cfg" if choice == "2" else ".txt"
-        default_name = f"switch_config{ext}"
+    elif choice == "2":
+        ext = ".cfg"
+        default_name = "switch_config.cfg"
         filename = input(f"Enter filename [{default_name}]: ").strip()
         if not filename:
             filename = default_name
-        # Check if file exists
+        if not filename.endswith(".cfg"):
+            filename += ".cfg"
         if os.path.exists(filename):
             overwrite = input(f"File {filename} already exists. Overwrite? (y/n): ").strip().lower()
             if overwrite != "y":
@@ -716,6 +776,70 @@ def handle_output(complete_cfg):
             print(f"Configuration saved to {filename}")
         except IOError as e:
             print(f"Error saving file: {e}")
+    elif choice == "3":
+        ext = ".txt"
+        default_name = "switch_config.txt"
+        filename = input(f"Enter filename [{default_name}]: ").strip()
+        if not filename:
+            filename = default_name
+        if not filename.endswith(".txt"):
+            filename += ".txt"
+        if os.path.exists(filename):
+            overwrite = input(f"File {filename} already exists. Overwrite? (y/n): ").strip().lower()
+            if overwrite != "y":
+                print("Save cancelled.")
+                return
+        try:
+            extract_to_txt(complete_cfg, filename)
+            print(f"Clean configuration extracted to {filename}")
+        except IOError as e:
+            print(f"Error saving file: {e}")
+        except Exception as e:
+            print(f"Error extracting clean config: {e}")
+    # choice 4: return to main menu (just fall through)
+
+
+def extract_to_txt(cfg_content, output_path):
+    """Extract only Cisco CLI commands (strip headers/comments, warnings, save menu text)
+    and write to a clean .txt file suitable for copy/pasting to Cisco devices.
+    """
+    lines = []
+    for line in cfg_content.splitlines():
+        stripped = line.strip()
+        # Skip UI elements
+        if stripped.startswith("==="):
+            continue
+        if "GENERATED CISCO CONFIGURATION" in stripped:
+            continue
+        if stripped.startswith("WARNING:"):
+            continue
+        if stripped.startswith("Save options:"):
+            continue
+        if stripped in ("1. Display configuration again",
+                        "2. Save to a .cfg file",
+                        "3. Save to a .txt file",
+                        "4. Return to the main menu"):
+            continue
+        if stripped == "Choose option (1-4):":
+            continue
+        if stripped == "END OF CONFIGURATION":
+            continue
+        if stripped.startswith("Cisco Switch Configuration"):
+            continue
+        lines.append(line)
+    # Collapse excessive blank lines
+    cleaned = []
+    prev_blank = False
+    for l in lines:
+        is_blank = (l.rstrip() == "")
+        if is_blank and prev_blank:
+            continue
+        cleaned.append(l)
+        prev_blank = is_blank
+    content = "\n".join(cleaned).strip() + "\n"
+    with open(output_path, "w") as f:
+        f.write(content)
+    return output_path
     # choice 4: return to main menu (just fall through)
 
 
